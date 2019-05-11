@@ -1,0 +1,127 @@
+
+local MAX_WIDTH = 400
+local BOX_HEIGHT = 32
+
+local SPEED = 800
+
+-- calculate go.animate duration based on
+-- distance and speed
+local function duration(distance)
+	return distance / SPEED
+end
+
+-- add a box to the pile of boxes
+-- keep track of box id and box width
+local function add_box(self, id, width)
+	self.boxes[#self.boxes + 1] = {
+		id = id,
+		width = width,
+	}
+end
+
+-- let a box fall to a target position
+local function fall(id, to, cb)
+	local pos = go.get_position(id)
+	local distance = pos.y - to
+	go.animate(id, "position.y", go.PLAYBACK_ONCE_FORWARD, to, go.EASING_INCUBIC, duration(distance), 0, cb)
+end
+
+-- remove the box at the bottom of the pile and let the
+-- boxes above fall down
+local function remove_bottom_box(self)
+	for i=#self.boxes, 2, -1 do
+		local below = self.boxes[i - 1]
+		local box = self.boxes[i]
+		fall(box.id, go.get_position(below.id).y, nil)
+	end
+	local bottom = table.remove(self.boxes, 1)
+	fall(bottom.id, -BOX_HEIGHT, function()
+		go.delete(bottom.id)
+	end)
+end
+
+-- create a box of a specific width
+local function create_box(pos, width)
+	return factory.create("#boxfactory", pos, nil, {}, vmath.vector3(width,1,1))
+end
+
+-- create and animate the box at the top of the screen
+-- that the player can drop
+local function create_top_box(self, width)
+	local pos = vmath.vector3(600, 800, 0)
+	local id = create_box(pos, width)
+	go.animate(id, "position.x", go.PLAYBACK_LOOP_PINGPONG, 40, go.EASING_LINEAR, 2)
+	self.current_id = id
+	self.current_width = width
+	return id
+end
+
+local function drop_box(self)
+	msg.post(".", "release_input_focus")
+	-- the moving box that should be dropped
+	-- calculate its bounds and stop moving it
+	local box_id = self.current_id
+	local box_pos = go.get_position(box_id)
+	local box_left = box_pos.x - self.current_width / 2
+	local box_right = box_pos.x + self.current_width / 2
+	go.cancel_animations(box_id, "position.x")
+
+	-- get the box at the top of the pile
+	-- calculate its bounds
+	local top_box = self.boxes[#self.boxes]
+	local top_pos = go.get_position(top_box.id)
+	local top_left = top_pos.x - top_box.width / 2
+	local top_right = top_pos.x + top_box.width / 2
+	local to = BOX_HEIGHT + top_pos.y
+	local distance = box_pos.y - to
+
+	-- fall down to above the top box
+	fall(box_id, to, function()
+		-- delete the box and create a new one
+		-- with a size and position matching the overlap
+		go.delete(box_id)
+		local overlap_left = top_left + math.max(box_left - top_left, 0)
+		local overlap_right = top_right + math.min(box_right - top_right, 0)
+		if overlap_left < overlap_right then
+			local width = overlap_right - overlap_left
+			local pos = vmath.vector3(overlap_left + width / 2, to, 0)
+			local id = create_box(pos, width)
+			-- add the box
+			-- remove the bottom box of the pile if needed
+			add_box(self, id, width)
+			if #self.boxes == 4 then
+				remove_bottom_box(self)
+			end
+			-- create a new top box and give control back to the player
+			create_top_box(self, width)
+			msg.post(".", "acquire_input_focus")
+		else
+			msg.post("#", "game_over")
+		end
+	end)
+end
+
+function init(self)
+	math.randomseed(os.time())
+	self.boxes = {}
+	msg.post("@render:", "clear_color", { color = vmath.vector4(0.2, 0.3, 0.7, 1.0) })
+	msg.post(".", "acquire_input_focus")
+
+	-- create an initial box at the bottom of the screen
+	add_box(self, create_box(vmath.vector3(320, 20, 0), MAX_WIDTH), MAX_WIDTH)
+
+	-- create a first top box
+	create_top_box(self, MAX_WIDTH)
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("game_over") then
+		print("OH NO!")
+	end
+end
+
+function on_input(self, action_id, action)
+	if action_id == hash("touch") and action.released then
+		drop_box(self)
+	end
+end
